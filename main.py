@@ -1,102 +1,105 @@
+import sys
 import os
-import requests
-import psycopg2
-from datetime import datetime, timedelta
+import traceback
 from dotenv import load_dotenv
-from scripts.weather_utils import convert_to_grid
 
-# [시스템 환경 관리] 보안과 유연성을 위해 외부 설정 파일(.env)에서 환경 변수를 로드합니다.
+# 1. 경로 설정 및 환경 변수 강제 로드
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+if BASE_DIR not in sys.path:
+    sys.path.append(BASE_DIR)
+
+# main 실행 시점에서 .env를 로드하여 설정 누락 여부를 조기에 파악합니다.
 load_dotenv()
 
-def fetch_and_load_weather():
+def setup_directories():
     """
-    기상청 API 허브에서 데이터를 추출(Extract)하여 특정 좌표의 값을 파싱(Transform)한 뒤
-    DB에 적재(Load)하는 ETL 프로세스입니다.
+    ETL 프로세스에 필요한 폴더 구조(data/raw)를 자동으로 생성하고 파일 존재 여부를 확인합니다.
     """
+    data_raw_path = os.path.join(BASE_DIR, 'data', 'raw')
+    if not os.path.exists(data_raw_path):
+        print(f"📂 [폴더 생성] 데이터 저장 경로가 없어 새로 생성합니다: {data_raw_path}")
+        os.makedirs(data_raw_path, exist_ok=True)
 
-    # 1. 위경도를 기상청 격자 좌표(nx, ny)로 변환 (예: 서울 시청)
-    nx, ny = convert_to_grid(37.5665, 126.9780)
+    # 파일 존재 여부 점검
+    files = [f for f in os.listdir(data_raw_path) if f.endswith(('.xlsx', '.csv'))]
 
-    # [시간 데이터 동기화]
-    # 기상청 초단기예보는 10분 단위로 생성됩니다.
-    # 현재 시각에서 1시간을 빼고, 분(mm)을 '00'으로 고정하여 가장 안정적인 정시 데이터를 요청합니다.
-    now = datetime.now() - timedelta(hours=1)
-    tmfc = now.strftime('%Y%m%d%H') + "00"
+    print("-" * 60)
+    print(f"✅ [경로 확인] {data_raw_path}")
+    if not files:
+        print("⚠️  [파일 부재] 로컬 data/raw 폴더에 수집할 엑셀/CSV 파일이 없습니다.")
+    else:
+        print(f"📄 [파일 목록] 감지된 파일: {files}")
+    print("-" * 60)
 
-    # 2. API 호출 설정
-    url = "https://apihub.kma.go.kr/api/typ01/cgi-bin/url/nph-dfs_vsrt_grd"
-    params = {
-        'tmfc': tmfc,                    # 필수: 발표 시간 (YYYYMMDDHHmm)
-        'vars': 'T1H',                   # 예보 변수: 기온
-        'authKey': os.getenv('WEATHER_API_KEY')
-    }
+def check_env_vars():
+    """
+    핵심 환경 변수가 설정되어 있는지 점검합니다.
+    세이핀님의 .env 상태를 기준으로 검증 로직을 강화했습니다.
+    """
+    required_vars = ['DB_HOST', 'DB_NAME', 'DB_USER', 'DB_PASSWORD', 'TRASH_BIN_URL']
+    missing_vars = [var for var in required_vars if not os.getenv(var)]
 
-    try:
-        # [네트워크 통신] 타임아웃을 설정하여 무한 대기로 인한 시스템 리소스 점유를 방지합니다.
-        response = requests.get(url, params=params, timeout=10)
-        response.raise_for_status()
+    # 1. 필수 변수 누락 확인
+    if missing_vars:
+        print(f"⚠️  [설정 누락] .env 파일에서 다음 항목이 비어있습니다: {', '.join(missing_vars)}")
 
-        # [문자열 파싱 알고리즘]
-        # 주석(#) 라인을 제외하고, 공백 및 콤마로 구분된 비정형 텍스트를 정제하여 1차원 리스트로 변환합니다.
-        lines = response.text.strip().split('\n')
-        numeric_data = []
-        for line in lines:
-            if line and not line.startswith('#'):
-                # [정규화] replace와 split을 연쇄 호출하여 데이터 포맷을 통일합니다.
-                numeric_data.extend(line.replace(',', ' ').split())
+    # 2. API 키 누락 별도 확인 (pet_places 실행 시 필요)
+    if not os.getenv('PUBLIC_DATA_API_KEY'):
+        print("⚠️  [API 키 누락] PUBLIC_DATA_API_KEY가 없어 반려견 시설 수집이 불가능합니다.")
 
-        # 3. 데이터 인덱싱 및 검증
-        # [자료구조 - 2차원 배열의 선형 매핑]
-        # 2차원 격자(149x253)의 (nx, ny) 위치를 1차원 리스트의 인덱스로 변환하는 공식입니다.
-        total_len = len(numeric_data)
-        target_idx = (ny - 1) * 149 + (nx - 1)
+    # 3. URL 형식 확인 (리다이렉트 주소 방지)
+    trash_url = os.getenv('TRASH_BIN_URL', '')
+    if 'google.com' in trash_url:
+        print("⚠️  https://namu.wiki/w/%EC%98%A4%EB%A5%98 TRASH_BIN_URL이 구글 리다이렉트 주소입니다. 직접 다운로드 링크로 수정이 필요합니다.")
 
-        if total_len > 0 and target_idx < total_len:
-            val = numeric_data[target_idx]
+    if not missing_vars and 'google.com' not in trash_url:
+        print("✅ [설정 확인] .env 환경 변수 기본 로드 완료")
 
-            # [데이터 예외 처리] 기상청의 약속된 결측치(-99.00)를 논리적으로 필터링합니다.
-            if val == "-99.00":
-                print(f"[{datetime.now()}] 좌표 ({nx}, {ny})는 현재 데이터 준비 중이거나 결측 영역입니다.")
-                return
+def main():
+    print("="*60)
+    print("🚀 DogooDogoo ETL 통합 시스템 진단 및 가동")
+    print(f"📍 실행 경로: {os.getcwd()}")
 
-            print(f"[{datetime.now()}] 데이터 수집 성공! 좌표({nx}, {ny}) 기온: {val}°C")
+    # 환경 및 폴더 점검
+    check_env_vars()
+    setup_directories()
 
-            # 4. DB 적재 로직 (PostgreSQL)
-            conn = psycopg2.connect(
-                host=os.getenv('DB_HOST'),
-                port=os.getenv('DB_PORT'),
-                database=os.getenv('DB_NAME'),
-                user=os.getenv('DB_USER'),
-                password=os.getenv('DB_PASSWORD')
-            )
-            cur = conn.cursor()
+    jobs = []
 
-            # [데이터 무결성 - UPSERT 전략]
-            # 중복 데이터 삽입을 방지하고 최신 정보로 갱신하는 멱등성(Idempotency) 확보 로직입니다.
-            sql = """
-                  INSERT INTO weather_forecast_cache (nx, ny, category, fcst_value, base_date, base_time)
-                  VALUES (%s, %s, %s, %s, %s, %s)
-                      ON CONFLICT (nx, ny, base_date, base_time, category)
-                DO UPDATE SET fcst_value = EXCLUDED.fcst_value, updated_at = CURRENT_TIMESTAMP; \
-                  """
-            base_date = tmfc[:8]
-            base_time = tmfc[8:]
-            cur.execute(sql, (nx, ny, 'T1H', val, base_date, base_time))
+    # 2. 모듈 로드 (실패 시 상세 사유 출력)
+    modules = [
+        ('pet_places', 'scripts.pet_place_etl', 'PetPlaceETL'),
+        ('trash_bins', 'scripts.trash_bin_etl', 'TrashBinETL'),
+        ('drinking_fountains', 'scripts.water_fountain_etl', 'WaterFountainETL')
+    ]
 
-            conn.commit()
-            print("라떼서버에 데이터 적재 완료.")
+    for name, module_path, class_name in modules:
+        try:
+            mod = __import__(module_path, fromlist=[class_name])
+            etl_class = getattr(mod, class_name)
+            jobs.append(etl_class())
+            print(f"✅ [로드 성공] {class_name}")
+        except ImportError:
+            print(f"❌ [로드 실패] {class_name} (파일이 없거나 경로가 잘못되었습니다.)")
+        except Exception as e:
+            print(f"❌ [오류 발생] {class_name} 초기화 중 에러: {e}")
 
-        else:
-            print(f"에러: 수집된 데이터 부족 (수집량: {total_len}, 필요 인덱스: {target_idx})")
-            if total_len == 0:
-                print(f"서버 응답 내용: {response.text[:100]}")
+    if not jobs:
+        print("\n🚫 실행 가능한 ETL 작업이 없습니다. 설정을 다시 확인해 주세요.")
+        return
 
-    except Exception as e:
-        print(f"런타임 에러 발생: {e}")
-    finally:
-        if 'conn' in locals():
-            cur.close()
-            conn.close()
+    print(f"\n📊 총 {len(jobs)}개의 작업을 순차적으로 실행합니다.\n")
+
+    for job in jobs:
+        try:
+            print(f"▶️  [{job.table_name}] 실행 중...")
+            job.run()
+        except Exception as e:
+            print(f"\n❌ [{job.table_name}] 중단됨: {str(e)}")
+
+    print("\n" + "="*60)
+    print("🏁 모든 ETL 프로세스 종료")
+    print("="*60)
 
 if __name__ == "__main__":
-    fetch_and_load_weather()
+    main()
