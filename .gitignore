@@ -12,4 +12,9 @@ __pycache__/
 # IDE 설정 파일
 .idea/
 .vscode/
+
+# 작업 부산물 및 엑셀 원천 데이터
+data/logs/*.csv
+data/raw/*.xlsx
+
 *.iml
