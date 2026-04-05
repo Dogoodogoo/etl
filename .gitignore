@@ -2,7 +2,7 @@
 venv/
 .venv/
 
-# 민감 정보 (DB 비번, API 키 보호) [cite: 2025-10-28]
+# 민감 정보 (DB 비번, API 키 보호)
 .env
 
 # 파이썬 캐시 및 컴파일 파일
@@ -16,3 +16,5 @@ __pycache__/
 # 작업 부산물 및 엑셀 원천 데이터
 data/logs/*.csv
 data/raw/*.xlsx
+
+*.iml
