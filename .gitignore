@@ -14,5 +14,5 @@ __pycache__/
 .vscode/
 
 # 작업 부산물 및 엑셀 원천 데이터
-etl/data/logs/*.csv
-etl/data/raw/*.xlsx
+data/logs/*.csv
+data/raw/*.xlsx
